@@ -1,0 +1,108 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FLT Flash‑Loan Dashboard</title>
+  <!-- TailwindCSS -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <!-- Ethers v5 (web3modal compatible) -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <!-- WalletConnect & Web3Modal -->
+  <script src="https://unpkg.com/@walletconnect/web3-provider@1.8.0/dist/umd/index.min.js"></script>
+  <script src="https://unpkg.com/web3modal@1.9.12/dist/index.js"></script>
+</head>
+<body class="bg-slate-100 min-h-screen flex flex-col items-center py-8">
+  <h1 class="text-3xl font-bold mb-6">🚀 FlashLoanMultiTool Dashboard</h1> <!-- Connect buttons --> <div class="flex gap-4 mb-6">
+    <button id="btnConnect" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow">MetaMask</button>
+    <button id="btnWC" class="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 shadow">WalletConnect</button>
+  </div>
+  <div id="wallet" class="text-sm mb-6 font-mono"></div> <!-- Amount & strategy buttons --> <div class="bg-white w-full max-w-sm p-6 rounded-xl shadow space-y-4">
+    <label class="block font-semibold">Flash‑loan amount (FLT)</label>
+    <input id="amount" type="number" step="any" class="w-full" placeholder="e.g. 100000" /><div class="grid gap-3">
+  <button data-strategy="0" class="act px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700">⚖️ Arbitrage DEX</button>
+  <button data-strategy="1" class="act px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">🔥 Aave Liquidation</button>
+  <button data-strategy="2" class="act px-4 py-2 rounded bg-purple-600 text-white hover:bg-purple-700">♻️ Self‑Refinance</button>
+  <button data-strategy="3" class="act px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">🔄 Rebalance</button>
+  <button data-strategy="4" class="act px-4 py-2 rounded bg-yellow-500 text-white hover:bg-yellow-600">📦 Migration</button>
+  <button data-strategy="5" class="act px-4 py-2 rounded bg-gray-700 text-white hover:bg-gray-800">🛡 White‑hat Test</button>
+</div>
+
+  </div> <!-- Log --> <pre id="log" class="mt-6 bg-white w-full max-w-sm p-4 rounded-xl text-xs whitespace-pre-wrap"></pre><script>
+/* ───────── Constants ───────── */
+const FLT = "0xd0435c107637606F95Dea861537800cB0C733D63";
+const TOOL = "0x37A9814D9D196FFe79747f82015eB43E4D000eD8";
+const USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const ROUTER_A = "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff";
+const ROUTER_B = "0x1b02da8cb7D5eF8FC9631cBE4d0Ff9F10e9e316F";
+
+const ABI = [[{"anonymous":false,"inputs":[{"indexed":true,"internalType":"enum FlashLoanMultiTool.Strategy","name":"strategy","type":"uint8"},{"indexed":false,"internalType":"uint256","name":"profit","type":"uint256"},{"indexed":false,"internalType":"address","name":"profitToken","type":"address"}],"name":"StrategyExecuted","type":"event"},{"inputs":[],"name":"AAVE_POOL","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"DEX_AGG_ROUTER","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"FLT","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"enum FlashLoanMultiTool.Strategy","name":"strategy","type":"uint8"},{"internalType":"bytes","name":"params","type":"bytes"}],"name":"executeFlashLoan","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"initiator","type":"address"},{"internalType":"address","name":"token","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"uint256","name":"fee","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"}],"name":"onFlashLoan","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"newOwner","type":"address"}],"name":"transferOwnership","outputs":[],"stateMutability":"nonpayable","type":"function"}];
+
+/* ───────── State ───────── */
+let provider, signer, tool;
+const abi = new ethers.utils.AbiCoder();
+const log = (t)=>document.getElementById("log").textContent += t+"\n";
+const amtWei = ()=> ethers.utils.parseUnits(document.getElementById("amount").value||"0","ether");
+
+/* ───────── Connect: MetaMask ───────── */
+document.getElementById('btnConnect').onclick = async () => {
+  if(!window.ethereum) return alert('MetaMask not found');
+  provider = new ethers.providers.Web3Provider(window.ethereum);
+  await provider.send('eth_requestAccounts',[]);
+  signer = provider.getSigner();
+  initContract();
+};
+
+/* ───────── Connect: WalletConnect QR ───────── */
+document.getElementById('btnWC').onclick = async () => {
+  const wcProvider = new WalletConnectProvider.default({
+    rpc: {137: 'https://polygon-rpc.com'},
+    chainId: 137
+  });
+  await wcProvider.enable();
+  provider = new ethers.providers.Web3Provider(wcProvider);
+  signer = provider.getSigner();
+  initContract();
+};
+
+function initContract(){
+  tool = new ethers.Contract(TOOL, ABI, signer);
+  signer.getAddress().then(addr=>{
+    document.getElementById('wallet').textContent = 'Connected: '+addr;
+    log('Wallet connected via '+(provider.provider.isWalletConnect ? 'WalletConnect':'MetaMask')+'\n');
+  });
+}
+
+/* ───────── Strategy buttons ───────── */
+document.querySelectorAll('.act').forEach(btn=>btn.onclick = async ()=>{
+  if(!signer) return alert('Connect first');
+  const strat = parseInt(btn.dataset.strategy);
+  const amt = amtWei();
+  if(amt.isZero()) return alert('Enter amount');
+
+  let params;
+  switch(strat){
+    case 0:
+      params = abi.encode(['address','address','address[]','address[]','uint256'],[
+        ROUTER_A,ROUTER_B,[FLT,USDC],[USDC,FLT],amt.toString()
+      ]);break;
+    case 1:
+      params = abi.encode(['address','address','uint256','bool'],[USDC,'0x000000000000000000000000000000000000dEaD',amt.toString(),false]);break;
+    case 2:
+      params = abi.encode(['uint256','address','uint256','uint256'],[amt.toString(),USDC,amt.toString(),2]);break;
+    case 3:
+      params = abi.encode(['address[]','uint256[]','address[]','uint256[]'],[[FLT],[amt.toString()],[USDC],[amt.toString()]]);break;
+    case 4:
+      params = abi.encode(['address','address','uint256','uint256'],['0xc3F0cc06d96b32f3fe3Bd32d43a392b24927F3f7',USDC,amt.toString(),amt.toString()]);break;
+    case 5:
+      params = abi.encode(['address[]','bytes[]'],[[],[]]);break;
+  }
+  try{
+    log('⏳ Sending tx ...');
+    const tx = await tool.executeFlashLoan(amt, strat, params);
+    log('TX: '+tx.hash);
+    await tx.wait();
+    log('✅ Success!\n');
+  }catch(e){ log('❌ '+(e.reason||e.message)+'\n'); }
+});
+</script></body>
+</html>
